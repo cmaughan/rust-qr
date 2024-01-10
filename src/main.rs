@@ -6,7 +6,7 @@ type Rgb32 = u32;
 type Vector2u = Vec2<u32>;
 
 // Window output buffer
-struct OutputBuffer {
+struct WindowBuffer {
     size: Vector2u,
     buffer: Vec<u32>,
 }
@@ -19,8 +19,8 @@ fn read_qr() -> Vec<Vec<u8>> {
         .collect()
 }
 
-// Write to the screen buffer
-fn write_to_buffer(qr: &Vec<Vec<u8>>, output: &mut OutputBuffer) {
+// Write to the screen buffer, enlarging the code, putting it in the center, with an outline
+fn qr_to_buffer(qr: &Vec<Vec<u8>>, output: &mut WindowBuffer) {
 
     let qr_width = qr[0].len();
     let qr_height = qr.len();
@@ -46,6 +46,7 @@ fn write_to_buffer(qr: &Vec<Vec<u8>>, output: &mut OutputBuffer) {
                         + (x * square_size + xx + offset.x);
                     output.buffer[index as usize] = col;
 
+                    // Outline if desired
                     if (y == 0 && yy == 0) || (y == height - 1 && yy == square_size - 1)
                      || (x == 0 && xx == 0) || (x == width - 1 && xx == square_size - 1) {
                         output.buffer[index as usize] = 0x0;
@@ -74,13 +75,14 @@ fn main() {
 
     window.limit_update_rate(Some(std::time::Duration::from_millis(100)));
 
-    let mut output = OutputBuffer {
+    let mut output = WindowBuffer {
         size: window_size,
         buffer: vec![0xFFFFFFFF; (window_size.x * window_size.y) as usize],
     };
 
-    write_to_buffer(&qr, &mut output);
+    qr_to_buffer(&qr, &mut output);
 
+    // Update the window contents
     window
         .update_with_buffer(
             &output.buffer,
