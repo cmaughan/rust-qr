@@ -6,26 +6,82 @@ type Rgb32 = u32;
 type Vector2u = Vec2<u32>;
 type Vector4u = Vec4<u32>;
 
+// Lookup tables for indices around the QR code tiles
+const UP_INDICES_4: &[(i32, i32)] = &[(1, 1), (0, 1), (1, 0), (0, 0)];
+
+const UP_INDICES_8: &[(i32, i32)] = &[
+    (1, 3),
+    (0, 3),
+    (1, 2),
+    (0, 2),
+    (1, 1),
+    (0, 1),
+    (1, 0),
+    (0, 0),
+];
+
+const DOWN_INDICES_8: &[(i32, i32)] = &[
+    (1, 0),
+    (0, 0),
+    (1, 1),
+    (0, 1),
+    (1, 2),
+    (0, 2),
+    (1, 3),
+    (0, 3),
+];
+
+const LEFT_INDICES_8: &[(i32, i32)] = &[
+    (3, 1),
+    (2, 1),
+    (3, 0),
+    (2, 0),
+    (1, 1),
+    (0, 1),
+    (1, 0),
+    (0, 0),
+];
+
+const LEFT_UP_INDICES_8: &[(i32, i32)] = &[
+    (3, 0),
+    (2, 0),
+    (3, 1),
+    (2, 1),
+    (1, 1),
+    (0, 1),
+    (1, 0),
+    (0, 0),
+];
+
+// Paths around the QR code, to each top-left pixel
+const WINDING: &[(i32, i32, &[(i32, i32)])] = &[
+    (0, 0, UP_INDICES_8),
+    (-2, -2, LEFT_INDICES_8),
+    (0, 2, DOWN_INDICES_8),
+    (0, 4, DOWN_INDICES_8),
+    (-2, 4, LEFT_UP_INDICES_8),
+    (0, -4, UP_INDICES_8),
+    (0, -4, UP_INDICES_8),
+    (-2, -2, LEFT_INDICES_8),
+    (0, 2, DOWN_INDICES_8),
+    (0, 4, DOWN_INDICES_8),
+    (-2, 4, LEFT_UP_INDICES_8),
+    (0, -4, UP_INDICES_8),
+];
+
 // Window output buffer
 struct WindowBuffer {
     size: Vector2u,
     buffer: Vec<u32>,
 }
 
-fn draw_square(output: &mut WindowBuffer, rc: &Vector4u, col: &Rgb32) {
+// Fill a square in output buffer
+fn fill_square(output: &mut WindowBuffer, rc: &Vector4u, col: &Rgb32) {
     for yy in 0..rc.w {
         for xx in 0..rc.z {
-            let index = (rc.y * rc.x + yy) * output.size.y + (rc.x * rc.z + xx);
-            output.buffer[index as usize] = *col;
+            let index = (rc.y + yy) * output.size.y + (rc.x + xx);
 
-            // Outline if desired
-            if (rc.y == 0 && yy == 0)
-                || (rc.y == rc.w - 1 && yy == rc.w - 1)
-                || (rc.x == 0 && xx == 0)
-                || (rc.x == rc.z - 1 && xx == rc.z - 1)
-            {
-                output.buffer[index as usize] = 0x0;
-            }
+            output.buffer[index as usize] = *col;
         }
     }
 }
@@ -34,15 +90,19 @@ fn draw_square(output: &mut WindowBuffer, rc: &Vector4u, col: &Rgb32) {
 fn qr_to_buffer(qr: &QR, output: &mut WindowBuffer) {
     let qr_width = qr.data[0].len() as u32;
     let qr_height = qr.data.len() as u32;
+
+    // Calculate optimum square size for the window
     let square_size: u32 =
         (min(output.size.x, output.size.y) / max(qr_width as u32, qr_height as u32)) - 2;
 
+    // Offset to the center
     let mut offset: Vector2u = Vector2u::new(
         output.size.x - (square_size * qr_width as u32),
         output.size.y - (square_size * qr_height as u32),
     );
     offset /= 2;
 
+    // Draw the squares
     for y in 0..qr_height {
         for x in 0..qr_width {
             let mut col: Rgb32 = 0xFFFFFFFF;
@@ -52,23 +112,16 @@ fn qr_to_buffer(qr: &QR, output: &mut WindowBuffer) {
                 col = 0x0;
             }
 
-            //draw_square(output, &Vector4u::new(x + offset.x, y + offset.y, square_size, square_size), &col);
-            for yy in 0..square_size {
-                for xx in 0..square_size {
-                    let index = (y * square_size + yy + offset.y) * output.size.y
-                        + (x * square_size + xx + offset.x);
-                    output.buffer[index as usize] = col;
-
-                    // Outline if desired
-                    if (y == 0 && yy == 0)
-                        || (y == qr_height - 1 && yy == square_size - 1)
-                        || (x == 0 && xx == 0)
-                        || (x == qr_width - 1 && xx == square_size - 1)
-                    {
-                        output.buffer[index as usize] = 0x0;
-                    }
-                }
-            }
+            fill_square(
+                output,
+                &Vector4u::new(
+                    x * square_size + offset.x,
+                    y * square_size + offset.y,
+                    square_size,
+                    square_size,
+                ),
+                &col,
+            );
         }
     }
 }
@@ -79,16 +132,17 @@ struct QR {
     height: u32,
     data: Vec<Vec<u8>>,
     version: u32,
-    masked: u8,
+    mask_type: u8,
+    name: String,
 }
 
-fn read_up(qr: &mut QR, start_coord: &(i32, i32), indices: &Vec<(i32, i32)>) -> u8 {
+fn read_cell(data: &Vec<Vec<u8>>, start_coord: &(i32, i32), indices: &[(i32, i32)]) -> u8 {
     let mut number = 0;
 
     for index in indices {
         let x = (start_coord.0 + index.0) as usize;
         let y = (start_coord.1 + index.1) as usize;
-        number = (number << 1) | qr.data[y][x];
+        number = (number << 1) | data[y][x];
     }
     number
 }
@@ -107,17 +161,17 @@ fn read_qr() -> QR {
 
     let width = data[0].len() as u32;
     let height = data.len() as u32;
-
     let version = (data[0].len() as u32 - 17) / 4;
     let mask_bits = data[8][0..5].to_vec();
-    dbg!(&mask_bits);
+
+    // Calculate the mask bits
     let mut mask = 0;
     for bit in mask_bits.iter() {
         mask = mask << 1 | bit
     }
 
     let xor_mask = 0b10101;
-    let masked = mask ^ xor_mask;
+    let mask_type = mask ^ xor_mask;
 
     for row in 0..height {
         for col in 0..width {
@@ -133,95 +187,31 @@ fn read_qr() -> QR {
         }
     }
 
-    let mut q = QR {
+    let mut current_x = (width - 2) as i32;
+    let mut current_y = (height - 2) as i32;
+
+    // Read encoding and length
+    let _encoding = read_cell(&mut data, &(current_x, current_y), &UP_INDICES_4);
+    current_y -= 4;
+    let _length = read_cell(&mut data, &(current_x, current_y), &UP_INDICES_8);
+    current_y -= 4;
+
+    // Walk around the cells
+    let mut name: String = "".to_string();
+    for wind in WINDING {
+        current_y += wind.1;
+        current_x += wind.0;
+        name.push(read_cell(&mut data, &(current_x, current_y), wind.2) as char);
+    }
+
+    QR {
         width,
         height,
         data,
         version,
-        masked,
-    };
-
-    let up_indices_4: Vec<(i32, i32)> = vec![(1, 1), (0, 1), (1, 0), (0, 0)];
-
-    let up_indices_8: Vec<(i32, i32)> = vec![
-        (1, 3),
-        (0, 3),
-        (1, 2),
-        (0, 2),
-        (1, 1),
-        (0, 1),
-        (1, 0),
-        (0, 0),
-    ];
-
-    let down_indices_8: Vec<(i32, i32)> = vec![
-        (1, 0),
-        (0, 0),
-        (1, 1),
-        (0, 1),
-        (1, 2),
-        (0, 2),
-        (1, 3),
-        (0, 3),
-    ];
-
-    let left_indices_8: Vec<(i32, i32)> = vec![
-        (3, 1),
-        (2, 1),
-        (3, 0),
-        (2, 0),
-        (1, 1),
-        (0, 1),
-        (1, 0),
-        (0, 0),
-    ];
-    
-    let left_up_indices_8: Vec<(i32, i32)> = vec![
-        (3, 0),
-        (2, 0),
-        (3, 1),
-        (2, 1),
-        (1, 1),
-        (0, 1),
-        (1, 0),
-        (0, 0),
-    ];
-    
-    let winding: Vec<(i32, i32, &Vec<(i32, i32)>)> = vec![
-        (0, 0, &up_indices_8),
-        (-2, -2, &left_indices_8),
-        (0, 2, &down_indices_8),
-        (0, 4, &down_indices_8),
-        (-2, 4, &left_up_indices_8),
-        (0, -4, &up_indices_8),
-        (0, -4, &up_indices_8),
-        (-2, -2, &left_indices_8),
-        (0, 2, &down_indices_8),
-        (0, 4, &down_indices_8),
-        (-2, 4, &left_up_indices_8),
-        (0, -4, &up_indices_8),
-    ];
-
-    let mut current_x = (width - 2) as i32;
-    let mut current_y = (height - 2) as i32;
-
-    let encoding = read_up(&mut q, &(current_x, current_y), &up_indices_4);
-    current_y -= 4;
-    let length = read_up(&mut q, &(current_x, current_y), &up_indices_8);
-    current_y -= 4;
-
-    let mut name : String = "".to_string();
-    for wind in winding {
-        current_y += wind.1;
-        current_x += wind.0;
-        name.push(read_up(&mut q, &(current_x, current_y), wind.2) as char);
+        mask_type,
+        name,
     }
-
-    dbg!(encoding);
-    dbg!(encoding);
-    dbg!(length);
-    dbg!(name);
-    q
 }
 
 fn main() {
@@ -241,15 +231,15 @@ fn main() {
 
     let mut output = WindowBuffer {
         size: window_size,
-        buffer: vec![0xFFFFFFFF; (window_size.x * window_size.y) as usize],
+        buffer: vec![0xFFAAAAAA; (window_size.x * window_size.y) as usize],
     };
 
     let qr = read_qr();
-
-    dbg!(qr.width);
-    dbg!(qr.height);
-    dbg!(qr.version);
-    dbg!(&qr.masked);
+    dbg!(&qr.version);
+    dbg!(&qr.width);
+    dbg!(&qr.height);
+    dbg!(&qr.mask_type);
+    dbg!(&qr.name);
 
     qr_to_buffer(&qr, &mut output);
 
